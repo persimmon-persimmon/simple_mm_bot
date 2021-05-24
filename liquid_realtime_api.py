@@ -39,7 +39,7 @@ class LiquidRealtimeApi():
         self.last_massage_timestamp = 0
         while self.ticker is None:
             time.sleep(3)
-            self._log_info("... waiting recieve first message.")
+            self._log_info("... waiting first message.")
         self._log_info("recieved first message.")
 
     def _subscribe(self, *args, **kwarg):
@@ -108,7 +108,6 @@ class LiquidRealtimeApi():
             "ask":float(ticker["market_ask"]),
             "bid":float(ticker["market_bid"]),
             "high":float(ticker["high_market_ask"]),
-            
             "low":float(ticker["low_market_bid"]),
             "volume":float(ticker["volume_24h"]),
             "latency":datetime.now(self.tz).timestamp()-float(ticker["timestamp"])
