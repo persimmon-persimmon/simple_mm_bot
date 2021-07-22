@@ -1,9 +1,11 @@
+import os
 import liquidtap
 import json
 from datetime import datetime,timezone,timedelta
 from threading import Thread
 import json
 import time
+from setup_logger import setup_logger
 
 class LiquidRealtimeApi():
     """
@@ -17,6 +19,7 @@ class LiquidRealtimeApi():
         :param logger:ロガーインスタンス
         """
         self.ticker = None
+        self.book = None
         self.stop_flg = True
         self.channel_thread = None
         self.ohlcv_1m = [{"timestamp":0} for _ in range(60)]
@@ -46,13 +49,14 @@ class LiquidRealtimeApi():
         """
         websocketの購読を設定するメソッド。_connectメソッド内でpusherオブジェクトのバインドする。
         """
-        self.tap.pusher.subscribe("product_cash_btcjpy_5").bind("updated", self._update_callback_market)
-        self.tap.pusher.subscribe("executions_cash_btcjpy").bind("created", self._update_callback_executions)
+        self.tap.pusher.subscribe("product_cash_btcjpy_5").bind("updated", self._recieve_market)
+        self.tap.pusher.subscribe("executions_cash_btcjpy").bind("created", self._recieve_executions)
+        self.tap.pusher.subscribe("price_ladders_cash_btcjpy").bind("updated", self._recieve_book)
 
     def _connect(self):
         """
         websocketの購読を開始し、接続状況を監視する。
-        最終メッセージ受信時から10秒経過した場合、接続に不備があるとみなし、websocketを再接続する。
+        最終メッセージ受信時から5秒経過した場合、接続に不備があるとみなし、websocketを再接続する。
         """
         while self.stop_flg == False:
             self.tap = liquidtap.Client()
@@ -60,8 +64,8 @@ class LiquidRealtimeApi():
             self.tap.pusher.connect()
             time.sleep(30)
             while self.stop_flg == False:
-                time.sleep(3)
-                if  self.get_seconds_from_last_message() > 10:
+                time.sleep(1)
+                if  self.get_seconds_from_last_message() > 5:
                     self.tap.pusher.disconnect()
                     self._log_info("too latency, reconnect liquid realtime api.")
                     break
@@ -97,7 +101,13 @@ class LiquidRealtimeApi():
         else:
             return self.ohlcv_1m[minute-n:minute+1]
 
-    def _update_callback_market(self,message):
+    def get_book(self):
+        """
+        外部から呼び出される。板情報を返す。
+        """        
+        return self.book
+
+    def _recieve_market(self,message):
         """
         Ticker情報を受信した時の処理。必要な情報のみ抽出し保持する。
         """
@@ -115,7 +125,7 @@ class LiquidRealtimeApi():
         self.ticker = ticker
         self.last_massage_timestamp = ticker["timestamp"]
 
-    def _update_callback_executions(self,message):
+    def _recieve_executions(self,message):
         """
         約定情報を受信した時の処理
         """
@@ -131,10 +141,44 @@ class LiquidRealtimeApi():
         self.last_massage_timestamp = execution["timestamp"]
         self._update_ohlcv_1m(execution)
 
+    def _recieve_book(self,message):
+        """
+        板情報を受信した時の処理
+        """
+        book = json.loads(message)
+        size_lap = 0.01
+        end_size = 0.2
+        ret = {
+            "timestamp":float(book["timestamp"]),
+            "asks":[float(book["asks"][0][0])],
+            "bids":[float(book["bids"][0][0])],
+            }
+        tmp=0
+        idx=0
+        next_size = size_lap
+        while tmp < end_size:
+            tmp += float(book["asks"][idx][1])
+            while next_size<=tmp:
+                ret["asks"].append(float(book["asks"][idx][0]))
+                next_size += size_lap
+                if next_size > end_size:break
+            idx += 1
+        tmp=0
+        idx=0
+        next_size = size_lap
+        while tmp < end_size:
+            tmp += float(book["bids"][idx][1])
+            while next_size<=tmp:
+                ret["bids"].append(float(book["bids"][idx][0]))
+                next_size += size_lap
+                if next_size > end_size:break
+            idx += 1
+        self.book = ret
+
     def _update_ohlcv_1m(self,execution):
         """
         約定情報から1分ローソク足を作る。
-        1分間約定情報がないという状況が起きると不正確なデータになる。未対応。
+        1分間約定がないと不正確なデータになる。未対応。
         """
         minute = datetime.fromtimestamp(execution["timestamp"]).minute
         if execution["timestamp"] - self.ohlcv_1m[minute]["timestamp"] > 60:
@@ -147,7 +191,7 @@ class LiquidRealtimeApi():
             self.ohlcv_1m[minute]["buy_volume"] = execution["quantity"] if execution["taker_side"] == "buy" else 0
             self.ohlcv_1m[minute]["sell_volume"] = execution["quantity"] if execution["taker_side"] == "sell" else 0
         else:
-            self.ohlcv_1m[minute]["timestamp"] = execution["timestamp"]
+            self.ohlcv_1m[minute]["timestamp"] = execution["timestamp"] - execution["timestamp"] % 60
             self.ohlcv_1m[minute]["high"] = max(self.ohlcv_1m[minute]["high"],execution["price"])
             self.ohlcv_1m[minute]["low"] = min(self.ohlcv_1m[minute]["low"],execution["price"])
             self.ohlcv_1m[minute]["close"] = execution["price"]
@@ -157,14 +201,12 @@ class LiquidRealtimeApi():
 
 
 if __name__=='__main__':
-    import logging
-    logger = logging.getLogger(__name__)
-    logger.addHandler(logging.StreamHandler())
-    logger.setLevel(logging.DEBUG)
+    logger = setup_logger(setup_logger(os.path.basename(__file__)))
     liquid_realtime_api = LiquidRealtimeApi(logger)
     liquid_realtime_api.start()
     time.sleep(3)
     for _ in range(5):
         print(liquid_realtime_api.get_ticker(),liquid_realtime_api.get_ohlcv(1))
+        print(liquid_realtime_api.get_book())
         time.sleep(3)
     liquid_realtime_api.stop()

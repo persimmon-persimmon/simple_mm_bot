@@ -51,13 +51,6 @@ class LiquidRestApi():
         """
         self._api_key_index = self._api_key_index + 1 if self._api_key_index + 1 < len(self.liquid_api_key) else 0
         return self.liquid_api_key[self._api_key_index]
-    '''
-    def _ccxt_api(self):
-        """
-        次に使用するccxtインスタンスを返す。
-        """
-        self._ccxt_api_index = self._ccxt_api_index + 1 if self._ccxt_api_index + 1 < len(self.ccxt_api) else 0
-        return self.ccxt_api[self._ccxt_api_index]'''
     
     def _create_request_param(self,path,query):
         url = 'https://api.liquid.com' + path + query
@@ -91,21 +84,20 @@ class LiquidRestApi():
 
     def get_ticker(self):
         url = f"https://api.liquid.com/products/{self.product_id}"
-        res = requests.get(url)
-        ticker = json.loads(res.text)
+        res = requests.get(url).json()
         ticker = {
-            "timestamp":float(ticker["timestamp"]),
-            "ltp":float(ticker["last_traded_price"]),
-            "ask":float(ticker["market_ask"]),
-            "bid":float(ticker["market_bid"]),
-            "high":float(ticker["high_market_ask"]),
-            "low":float(ticker["low_market_bid"]),
-            "volume":float(ticker["volume_24h"]),
-            "latency":datetime.now(self.tz).timestamp()-float(ticker["timestamp"])
+            "timestamp":float(res["timestamp"]),
+            "ltp":float(res["last_traded_price"]),
+            "ask":float(res["market_ask"]),
+            "bid":float(res["market_bid"]),
+            "high":float(res["high_market_ask"]),
+            "low":float(res["low_market_bid"]),
+            "volume":float(res["volume_24h"]),
+            "latency":datetime.now(self.tz).timestamp()-float(res["timestamp"])
             }
         return ticker
 
-    def market(self,quantity):
+    def market_order(self,quantity):
         path = '/orders/'
         query = ''
         headers,url = self._create_request_param(path,query)
@@ -116,7 +108,7 @@ class LiquidRestApi():
             "margin_type":"cross",
             "product_id":self.product_id,
             "side":side,
-            "quantity":quantity,
+            "quantity":abs(quantity),
             "leverage_level":2,
             "funding_currency":'JPY',
             "order_direction":'netout',
@@ -126,17 +118,17 @@ class LiquidRestApi():
 
         for _ in range(self.try_num):
             try:
-                res = requests.post(url, headers=headers, data=json_data)
-                value = json.loads(res.text)
-                return self._to_my_order_format(value)
+                res = requests.post(url, headers=headers, data=json_data).json()
+                return self._to_my_order_format(res)
             except Exception as e:
+                break
                 self.logger.error(f"error in {sys._getframe().f_code.co_name}.{e}")
                 self.logger.error(traceback.format_exc())
                 time.sleep(1)
         raise Exception("over try_num.")
 
     # 指値注文する関数
-    def limit(self,quantity,price):
+    def limit_order(self,quantity,price):
         path = '/orders/'
         query = ''
         headers,url = self._create_request_param(path,query)
@@ -148,7 +140,7 @@ class LiquidRestApi():
             "margin_type":"cross",
             "product_id":self.product_id,
             "side":side,
-            "quantity":quantity,
+            "quantity":abs(quantity),
             "price":price,
             "leverage_level":2,
             "funding_currency":'JPY',
@@ -159,39 +151,30 @@ class LiquidRestApi():
 
         for _ in range(self.try_num):
             try:
-                res = requests.post(url, headers=headers, data=json_data)
-                value = json.loads(res.text)
-                return self._to_my_order_format(value)
+                res = requests.post(url, headers=headers, data=json_data).json()
+                return self._to_my_order_format(res)
             except Exception as e:
                 self.logger.error(f"error in {sys._getframe().f_code.co_name}.{e}")
                 self.logger.error(traceback.format_exc())
                 time.sleep(1)
         raise Exception("over try_num.")
 
-    """# 注文を確認
-    def get_orders(self,status=None):
-        orders=[]
-        if status is None:
-            orders=self._ccxt_api().fetch_orders(symbol=self.symbol,params = { "product_code" : self.symbol })
-        elif status=='open':
-            orders=self._ccxt_api().fetch_open_orders(symbol=self.symbol,params = { "product_code" : self.symbol })
-        elif status=='closed':
-            orders=self._ccxt_api().fetch_closed_orders(symbol=self.symbol,params = { "product_code" : self.symbol })
-        return list(map(self._to_my_order_format,orders))"""
 
     def get_orders(self,status=None):
+        """
+        statusはliveかfilled
+        """
         for _ in range(self.try_num):
             try:
                 path = '/orders/'
                 query = ''
                 headers,url = self._create_request_param(path,query)
-                res = requests.get(url, headers=headers)
-                value = json.loads(res.text)
+                res = requests.get(url, headers=headers).json()
                 if status is None:
-                    orders = [order for order in map(self._to_my_order_format,value)]
+                    orders = [order for order in map(self._to_my_order_format,res["models"])]
                     return orders
                 else:
-                    orders = [order for order in map(self._to_my_order_format,value) if order["status"]==status]
+                    orders = [order for order in map(self._to_my_order_format,res["models"]) if order["status"]==status]
                     return orders
             except Exception as e:
                 self.logger.error(f"error in {sys._getframe().f_code.co_name}.{e}")
@@ -212,9 +195,8 @@ class LiquidRestApi():
             path = f'/orders/{order_id}/cancel'
             query = ""
             headers,url = self._create_request_param(path,query)
-            res = requests.put(url, headers=headers)
-            order = json.loads(res.text)
-            return self._to_my_order_format(order)
+            res = requests.put(url, headers=headers).json()
+            return self._to_my_order_format(res)
         except Exception as e:
             # 約定済みのケース
             return None
@@ -240,8 +222,8 @@ class LiquidRestApi():
                 path = '/trades/close_all/'
                 query = ''
                 headers,url = self._create_request_param(path,query)
-                res = requests.put(url, headers=headers)
-                return json.loads(res.text)
+                res = requests.put(url, headers=headers).json()
+                return res
             except Exception as e:
                 self.logger.error(f"error in {sys._getframe().f_code.co_name}.{e}")
                 self.logger.error(traceback.format_exc())
@@ -257,8 +239,8 @@ class LiquidRestApi():
                 path = '/fiat_accounts/'
                 query = ''
                 headers,url = self._create_request_param(path,query)
-                res = requests.get(url, headers=headers)
-                return json.loads(res.text)
+                res = requests.get(url, headers=headers).json()
+                return res
             except Exception as e:
                 self.logger.error(f"error in {sys._getframe().f_code.co_name}.{e}")
                 self.logger.error(traceback.format_exc())
@@ -271,12 +253,8 @@ class LiquidRestApi():
                 path = '/trades/'
                 query = ''
                 headers,url = self._create_request_param(path,query)
-                res = requests.get(url, headers=headers)
-                print(res)
-                print(res.text)
-                time.sleep(10)
-                ret = json.loads(res.text)
-                ret = [trade for trade in res["models"]]
+                res = requests.get(url, headers=headers).json()
+                ret = [trade for trade in res["models"] if trade["product_id"] == self.product_id]
                 return ret
             except Exception as e:
                 self.logger.error(f"error in {sys._getframe().f_code.co_name}.{e}")
@@ -291,7 +269,7 @@ class LiquidRestApi():
         try:
             trades = self.get_trades()
             position = 0
-            for trade in trades["models"]:
+            for trade in trades:
                 if trade["currency_pair_code"] == self.symbol:
                     if trade["side"] == "long":
                         position += float(trade["open_quantity"])
@@ -317,15 +295,14 @@ class LiquidRestApi():
             closed_pnl = 0
             open_pnl = 0
             next_lastest_timestamp = self.last_closed_pnl_timestamp
-            for trade in trades["models"]:
-                if trade["currency_pair_code"] == self.symbol:
-                    if trade["status"] == "open":
-                        open_pnl += float(trade["open_pnl"])
-                        if trade["side"] == "long":
-                            position += float(trade["open_quantity"])
-                        elif trade["side"] == "short":
-                            position -= float(trade["open_quantity"])
-                    elif trade["status"] == "closed":
+            for trade in trades:
+                if trade["status"] == "open":
+                    open_pnl += float(trade["open_pnl"])
+                    if trade["side"] == "long":
+                        position += float(trade["open_quantity"])
+                    elif trade["side"] == "short":
+                        position -= float(trade["open_quantity"])
+                elif trade["status"] == "closed":
                         if self.last_closed_pnl_timestamp < trade["updated_at"]:
                             next_lastest_timestamp = max(next_lastest_timestamp,trade["updated_at"])
                             closed_pnl += float(trade["pnl"])
@@ -347,16 +324,5 @@ if __name__=='__main__':
     logger.addHandler(logging.StreamHandler())
     logger.setLevel(logging.DEBUG)
     rest_api = LiquidRestApi(config,logger)
-    ticker = rest_api.get_ticker()
-    print("get_position:",rest_api.get_position())
-    print("get_jpy:",rest_api.get_jpy())
-    print("get_orders:",rest_api.get_orders())
-    exit()
-    ask = ticker["ask"] + 5 * 10**5
-    quantity = 0.0001
-    print(f"create limit order, type=ask price={ask},quantity={quantity}")
-    order = rest_api.limit(quantity,ask)
-    print("limit:",order)
-    print("get_orders:",rest_api.get_orders())
-    print("get_order:",rest_api.get_order(order["id"]))
-    print("cancel_order:",rest_api.cancel_order(order["id"]))
+    print("get_ticker:",rest_api.get_ticker())
+    print("limit_order:",rest_api.limit_order(0.0001,330 * 10 ** 4))
